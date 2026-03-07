@@ -7,7 +7,7 @@ import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from src import bms_crawler, config, telegram_notify
+from src import bms_crawler, config, slack_notify
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,21 +32,19 @@ def run_job() -> None:
             logger.info("Showtimes / options: %s", result.showtimes)
         if result.movie_url:
             logger.info("URL: %s", result.movie_url)
-        token = cfg.get("telegram_bot_token")
-        chat_id = cfg.get("telegram_chat_id")
-        if token and chat_id:
-            if telegram_notify.notify_tickets_available(
-                bot_token=token,
-                chat_id=chat_id,
+        webhook_url = cfg.get("slack_webhook_url")
+        if webhook_url:
+            if slack_notify.notify_tickets_available(
+                webhook_url=webhook_url,
                 movie_name=cfg["movie_name"],
                 target_date_str=cfg["target_date_str"],
                 message=result.message,
                 showtimes=result.showtimes or [],
                 movie_url=result.movie_url,
             ):
-                logger.info("Telegram notification sent")
+                logger.info("Slack notification sent")
             else:
-                logger.warning("Telegram notification failed")
+                logger.warning("Slack notification failed")
     else:
         logger.info(
             "Tickets not yet available for %s on %s. %s",

@@ -55,15 +55,9 @@ def get_bms_movie_slug() -> str | None:
     return value or None
 
 
-def get_telegram_bot_token() -> str | None:
-    """Optional: Telegram bot token for availability notifications (from @BotFather)."""
-    value = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    return value or None
-
-
-def get_telegram_chat_id() -> str | None:
-    """Optional: Telegram chat ID to receive notifications (e.g. from @userinfobot)."""
-    value = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+def get_slack_webhook_url() -> str | None:
+    """Optional: Slack Incoming Webhook URL for availability notifications."""
+    value = os.getenv("SLACK_WEBHOOK_URL", "").strip()
     return value or None
 
 
@@ -114,6 +108,5 @@ def load_config() -> dict:
         "target_date_yyyymmdd": get_target_date_yyyymmdd(),
         "bms_event_id": event_id,
         "bms_movie_slug": movie_slug,
-        "telegram_bot_token": get_telegram_bot_token(),
-        "telegram_chat_id": get_telegram_chat_id(),
+        "slack_webhook_url": get_slack_webhook_url(),
     }

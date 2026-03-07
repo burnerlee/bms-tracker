@@ -42,14 +42,13 @@ A Python app that runs on a schedule (default: every 1 minute), crawls [BookMySh
 | `TARGET_DATE` | Date to check for availability in `YYYY-MM-DD` format. | `2026-03-19` |
 | `BMS_EVENT_ID` | Optional. Event ID from the movie’s buytickets URL (e.g. `ET00478890`). If set, the crawler skips search and opens the buytickets page directly. | — |
 | `BMS_MOVIE_SLUG` | Optional. Movie slug for the URL when using `BMS_EVENT_ID` (e.g. `dhurandhar-the-revenge`). If omitted but `BMS_EVENT_ID` is set, derived from `MOVIE_NAME`. | — |
-| `TELEGRAM_BOT_TOKEN` | Optional. Telegram bot token (from [@BotFather](https://t.me/BotFather)). When set with `TELEGRAM_CHAT_ID`, you get a Telegram message when tickets are available. | — |
-| `TELEGRAM_CHAT_ID` | Optional. Your Telegram chat ID (e.g. from [@userinfobot](https://t.me/userinfobot)). Used with `TELEGRAM_BOT_TOKEN` for notifications. | — |
+| `SLACK_WEBHOOK_URL` | Optional. Slack Incoming Webhook URL. When set, the app posts to that channel when tickets are available. | — |
 
-### Telegram notifications (optional)
+### Slack notifications (optional)
 
-1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts. Copy the **bot token** (e.g. `123456789:ABCdefGHI...`).
-2. Get your **chat ID**: message [@userinfobot](https://t.me/userinfobot) and it will reply with your ID (a number).
-3. In `.env`, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. When tickets are available, the app will send you a message with the movie, date, showtimes (if any), and the BookMyShow URL.
+1. In Slack: **Apps** → **Incoming Webhooks** (or create one at [api.slack.com/messaging/webhooks](https://api.slack.com/messaging/webhooks)). Add to your workspace and pick the channel (e.g. a private channel or #general).
+2. Copy the **Webhook URL** (e.g. `https://hooks.slack.com/services/T00/B00/xxx`).
+3. In `.env`, set `SLACK_WEBHOOK_URL` to that URL. When tickets are available, the app will post a message with the movie, date, showtimes (if any), and a link to BookMyShow.
 
 ## Run
 
@@ -61,7 +60,7 @@ The app will:
 
 - Run one check immediately, then repeat every `CRON_INTERVAL_MINUTES`.
 - Log whether tickets are available for the movie on the target date, and the BookMyShow URL when relevant.
-- If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, send you a Telegram message when tickets become available.
+- If `SLACK_WEBHOOK_URL` is set, post a message to that Slack channel when tickets become available.
 - Keep running until you stop it with Ctrl+C (graceful shutdown).
 
 ## Project layout
@@ -69,7 +68,7 @@ The app will:
 - `src/main.py` – Entry point: loads config, starts the scheduler, runs the check job.
 - `src/config.py` – Loads and validates settings from `.env`.
 - `src/bms_crawler.py` – Playwright-based crawler: search movie, resolve event ID, open buytickets page for the date, parse availability.
-- `src/telegram_notify.py` – Sends a message via the Telegram Bot API when tickets are available.
+- `src/slack_notify.py` – Sends a message to Slack via an Incoming Webhook when tickets are available.
 
 ## Notes
 
