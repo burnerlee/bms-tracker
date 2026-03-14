@@ -28,6 +28,7 @@ class CrawlResult:
     showtimes: list[str]
     message: str
     movie_url: str | None = None
+    theatres: list[str] | None = None
 
 
 def _extract_event_id_from_href(href: str) -> str | None:
@@ -147,6 +148,7 @@ def _check_availability_direct(
                     movie_url=buytickets_url,
                 )
 
+            theatres = _parse_theatres_from_page(page)
             return CrawlResult(
                 available=True,
                 showtimes=[],
@@ -155,6 +157,7 @@ def _check_availability_direct(
                     f"URL: {buytickets_url}"
                 ),
                 movie_url=buytickets_url,
+                theatres=theatres if theatres else None,
             )
         except Exception as e:
             logger.exception("Crawler error (direct)")
@@ -333,6 +336,129 @@ def _parse_availability_from_page(
     return showtimes, available
 
 
+# UI labels and non-venue strings to exclude when parsing theatre names from page text
+_NON_VENUE_LABELS = frozenset({
+    "price range", "sort by", "preferred time", "special formats", "other filters",
+    "got it", "available", "fast filling", "non-cancellable", "cancellation available",
+    "hindi - 2d", "change location", "book", "search", "movie runtime",
+})
+
+
+def _is_valid_venue_name(n: str) -> bool:
+    """Return True if this string is a real venue name and not a recommendation/label."""
+    if not n or len(n) < 3 or len(n) > 200:
+        return False
+    n_lower = n.lower()
+    if n_lower in _NON_VENUE_LABELS:
+        return False
+    if "runtime" in n_lower or re.search(r"\d+h\s*\d*m", n_lower):
+        return False
+    if "goes beyond" in n_lower and "story" in n_lower:
+        return False
+    if re.match(r"^\d{1,2}\s*:\s*\d{2}", n) or re.match(r"^\d{1,2}:\d{2}", n):
+        return False
+    return True
+
+
+# Pattern for venue card text: "Venue Name 07:00 AM ..." or "Venue Name\n07:00 AM ..."
+_VENUE_CARD_TIME_RE = re.compile(
+    r"^\s*(.+?)\s+\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM|am|pm)?",
+    re.DOTALL,
+)
+
+
+def _venue_name_from_card_text(text: str) -> str | None:
+    """Extract venue name from card text; returns None if not a valid card pattern."""
+    if not text or len(text) > 3000:
+        return None
+    match = _VENUE_CARD_TIME_RE.match(text.strip())
+    if match:
+        return match.group(1).strip()
+    first_line = text.split("\n")[0].strip() if "\n" in text else text.strip()
+    if re.search(r"\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM|am|pm)", text) and ":" in first_line:
+        return first_line
+    return None
+
+
+def _parse_theatres_from_page(page: Any) -> list[str]:
+    """
+    Extract theatre names only from venue cards in the main listing. Uses the
+    virtualized grid container (ReactVirtualized) when present; otherwise finds
+    divs whose text looks like a venue card (name + showtimes). No BMS hashed
+    class names (e8nk8f, etc.) so layout changes don't break us.
+    """
+    theatres: list[str] = []
+    seen: set[str] = set()
+
+    def add_from_text(text: str) -> bool:
+        name = _venue_name_from_card_text(text)
+        if not name or not _is_valid_venue_name(name):
+            return False
+        if name not in seen:
+            seen.add(name)
+            theatres.append(name)
+        return True
+
+    # 1) Prefer direct children of the virtualized grid (react-virtualized class)
+    try:
+        container = page.locator(
+            "div[class*='ReactVirtualized__Grid__innerScrollContainer']"
+        )
+        for i in range(container.count()):
+            scroll_container = container.nth(i)
+            cards = scroll_container.locator(":scope > div")
+            for j in range(cards.count()):
+                try:
+                    el = cards.nth(j)
+                    if el.is_visible():
+                        text = (el.inner_text() or "").strip()
+                        if text and re.search(
+                            r"\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM|am|pm)", text
+                        ):
+                            add_from_text(text)
+                except Exception:
+                    continue
+            if theatres:
+                return theatres
+    except Exception:
+        pass
+
+    # 2) Fallback: find any div that looks like a single venue card (name + times, bounded size)
+    try:
+        raw = page.evaluate(
+            """() => {
+              const timeRe = /\\d{1,2}\\s*:\\s*\\d{2}\\s*(AM|PM|am|pm)?/i;
+              const venueRe = /^[A-Za-z][^:\\n]{2,}:\\s*.+$/;
+              const out = [];
+              const seen = new Set();
+              function getVenueFromText(text) {
+                const m = text.match(/^\\s*(.+?)\\s+\\d{1,2}\\s*:\\s*\\d{2}\\s*(?:AM|PM|am|pm)?/);
+                return m ? m[1].trim() : null;
+              }
+              document.querySelectorAll('div').forEach(div => {
+                const t = (div.innerText || '').trim();
+                if (t.length < 80 || t.length > 2500) return;
+                if (!timeRe.test(t)) return;
+                const firstLine = t.split('\\n')[0].trim();
+                if (!venueRe.test(firstLine)) return;
+                const name = getVenueFromText(t) || firstLine;
+                if (name && !seen.has(name)) { seen.add(name); out.push(name); }
+              });
+              return out;
+            }"""
+        )
+        if isinstance(raw, list):
+            for name in raw:
+                n = (name or "").strip()
+                if _is_valid_venue_name(n) and n not in seen:
+                    seen.add(n)
+                    theatres.append(n)
+    except Exception:
+        pass
+
+    return theatres
+
+
 def _check_availability_impl(
     city: str,
     movie_name: str,
@@ -417,9 +543,10 @@ def _check_availability_impl(
             page.goto(buytickets_url, wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
 
-            # 5) Parse showtimes / Book buttons
+            # 5) Parse showtimes / Book buttons and theatres
             showtimes, available = _parse_availability_from_page(page, buytickets_url)
             showtimes = list(dict.fromkeys(showtimes))[:15]
+            theatres = _parse_theatres_from_page(page) if available else []
             if available:
                 message = (
                     f"Tickets available for {target_date_yyyymmdd}. "
@@ -436,6 +563,7 @@ def _check_availability_impl(
                 showtimes=showtimes,
                 message=message,
                 movie_url=buytickets_url,
+                theatres=theatres if theatres else None,
             )
 
         except Exception as e:

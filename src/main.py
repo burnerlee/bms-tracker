@@ -30,10 +30,22 @@ def run_job() -> None:
         )
         if result.showtimes:
             logger.info("Showtimes / options: %s", result.showtimes)
+        if result.theatres:
+            logger.info("Theatres (%d): %s", len(result.theatres), result.theatres)
         if result.movie_url:
             logger.info("URL: %s", result.movie_url)
         webhook_url = cfg.get("slack_webhook_url")
-        if webhook_url:
+        preferred = cfg.get("preferred_theatre_substrings") or []
+        theatres_list = result.theatres or []
+        if preferred:
+            preferred_lower = [s.lower() for s in preferred]
+            matching = [
+                t for t in theatres_list
+                if any(sub in t.lower() for sub in preferred_lower)
+            ]
+        else:
+            matching = list(theatres_list)
+        if webhook_url and (not preferred or matching):
             if slack_notify.notify_tickets_available(
                 webhook_url=webhook_url,
                 movie_name=cfg["movie_name"],
@@ -41,10 +53,17 @@ def run_job() -> None:
                 message=result.message,
                 showtimes=result.showtimes or [],
                 movie_url=result.movie_url,
+                theatres=theatres_list,
+                preferred_matches=matching if preferred else None,
             ):
                 logger.info("Slack notification sent")
             else:
                 logger.warning("Slack notification failed")
+        elif webhook_url and preferred and not matching:
+            logger.info(
+                "Tickets available but no preferred theatre (substrings: %s); skipping Slack",
+                preferred,
+            )
     else:
         logger.info(
             "Tickets not yet available for %s on %s. %s",
@@ -68,7 +87,6 @@ def main() -> None:
         trigger="interval",
         minutes=interval_minutes,
         id="bms_check",
-        next_run_time=None,
     )
 
     def shutdown(_sig=None, _frame=None) -> None:

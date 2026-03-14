@@ -61,6 +61,21 @@ def get_slack_webhook_url() -> str | None:
     return value or None
 
 
+def get_preferred_theatre_substrings() -> list[str]:
+    """
+    Substrings to match in theatre names (case-insensitive). Notifications are sent
+    only when at least one theatre contains one of these. Comma-separated in env.
+    Default: Koramangala, Vega City.
+    """
+    raw = os.getenv(
+        "PREFERRED_THEATRE_SUBSTRINGS",
+        "Koramangala,Vega City",
+    ).strip()
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def get_target_date_str() -> str:
     """Return TARGET_DATE as YYYY-MM-DD for display."""
     raw = os.getenv("TARGET_DATE", DEFAULT_TARGET_DATE).strip()
@@ -109,4 +124,5 @@ def load_config() -> dict:
         "bms_event_id": event_id,
         "bms_movie_slug": movie_slug,
         "slack_webhook_url": get_slack_webhook_url(),
+        "preferred_theatre_substrings": get_preferred_theatre_substrings(),
     }
