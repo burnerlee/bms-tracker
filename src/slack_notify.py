@@ -43,6 +43,8 @@ def notify_tickets_available(
     movie_url: str | None,
     theatres: list[str] | None = None,
     preferred_matches: list[str] | None = None,
+    show_types: list[str] | None = None,
+    theatre_show_types: dict[str, list[str]] | None = None,
 ) -> bool:
     """Build a notification message and send it to Slack."""
     lines = [
@@ -58,10 +60,21 @@ def notify_tickets_available(
         lines.append("*Preferred location(s) available:*")
         for t in preferred_matches:
             lines.append(f"• {t}")
+    if theatre_show_types:
+        lines.append("")
+        lines.append("*Theatres & show types:*")
+        for t in list(theatre_show_types.keys())[:30]:
+            types_str = ", ".join(theatre_show_types[t]) if theatre_show_types[t] else "—"
+            lines.append(f"• {t}: {types_str}")
+        if len(theatre_show_types) > 30:
+            lines.append(f"… and {len(theatre_show_types) - 30} more")
+    elif show_types:
+        lines.append("")
+        lines.append("*Show types:* " + ", ".join(show_types))
     if showtimes:
         lines.append("")
         lines.append("Showtimes / options: " + ", ".join(showtimes[:10]))
-    if theatres:
+    if theatres and not theatre_show_types:
         lines.append("")
         lines.append("*Theatres:*")
         for t in theatres[:30]:

@@ -32,11 +32,18 @@ def run_job() -> None:
             logger.info("Showtimes / options: %s", result.showtimes)
         if result.theatres:
             logger.info("Theatres (%d): %s", len(result.theatres), result.theatres)
+        if result.theatre_show_types:
+            for venue, types_list in result.theatre_show_types.items():
+                logger.info("  %s: %s", venue, types_list)
+        elif result.show_types:
+            logger.info("Show types: %s", result.show_types)
         if result.movie_url:
             logger.info("URL: %s", result.movie_url)
         webhook_url = cfg.get("slack_webhook_url")
         preferred = cfg.get("preferred_theatre_substrings") or []
+        preferred_show_types = cfg.get("preferred_show_types") or []
         theatres_list = result.theatres or []
+        theatre_show_types = result.theatre_show_types or {}
         if preferred:
             preferred_lower = [s.lower() for s in preferred]
             matching = [
@@ -45,7 +52,25 @@ def run_job() -> None:
             ]
         else:
             matching = list(theatres_list)
-        if webhook_url and (not preferred or matching):
+
+        def has_preferred_show_type(theatre_name: str) -> bool:
+            types_at = theatre_show_types.get(theatre_name, [])
+            if not preferred_show_types:
+                return True
+            pref_lower = [p.lower() for p in preferred_show_types]
+            for st in types_at:
+                st_lower = st.lower()
+                for p in pref_lower:
+                    if p in st_lower or st_lower in p:
+                        return True
+            return False
+
+        matching_with_show_type = [t for t in matching if has_preferred_show_type(t)]
+        notify = (
+            (not preferred or matching)
+            and (not preferred_show_types or matching_with_show_type)
+        )
+        if webhook_url and notify:
             if slack_notify.notify_tickets_available(
                 webhook_url=webhook_url,
                 movie_name=cfg["movie_name"],
@@ -54,16 +79,28 @@ def run_job() -> None:
                 showtimes=result.showtimes or [],
                 movie_url=result.movie_url,
                 theatres=theatres_list,
-                preferred_matches=matching if preferred else None,
+                preferred_matches=(
+                    matching_with_show_type
+                    if (preferred and preferred_show_types)
+                    else (matching if preferred else None)
+                ),
+                show_types=result.show_types or [],
+                theatre_show_types=result.theatre_show_types or {},
             ):
                 logger.info("Slack notification sent")
             else:
                 logger.warning("Slack notification failed")
-        elif webhook_url and preferred and not matching:
-            logger.info(
-                "Tickets available but no preferred theatre (substrings: %s); skipping Slack",
-                preferred,
-            )
+        elif webhook_url and not notify:
+            if preferred and not matching:
+                logger.info(
+                    "Tickets available but no preferred theatre (substrings: %s); skipping Slack",
+                    preferred,
+                )
+            elif preferred_show_types and matching and not matching_with_show_type:
+                logger.info(
+                    "Preferred theatre(s) found but none has preferred show type (%s); skipping Slack",
+                    preferred_show_types,
+                )
     else:
         logger.info(
             "Tickets not yet available for %s on %s. %s",

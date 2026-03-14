@@ -76,6 +76,18 @@ def get_preferred_theatre_substrings() -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def get_preferred_show_types() -> list[str]:
+    """
+    Show types (IMAX, GOLD, 2D, etc.) to filter notifications. When set, we only
+    notify if at least one preferred theatre has at least one of these (substring
+    match, case-insensitive). Comma-separated in env. Empty = no filter.
+    """
+    raw = os.getenv("PREFERRED_SHOW_TYPES", "").strip()
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def get_target_date_str() -> str:
     """Return TARGET_DATE as YYYY-MM-DD for display."""
     raw = os.getenv("TARGET_DATE", DEFAULT_TARGET_DATE).strip()
@@ -125,4 +137,5 @@ def load_config() -> dict:
         "bms_movie_slug": movie_slug,
         "slack_webhook_url": get_slack_webhook_url(),
         "preferred_theatre_substrings": get_preferred_theatre_substrings(),
+        "preferred_show_types": get_preferred_show_types(),
     }

@@ -29,6 +29,9 @@ class CrawlResult:
     message: str
     movie_url: str | None = None
     theatres: list[str] | None = None
+    show_types: list[str] | None = None
+    # Per-theatre show types: theatre name -> list of formats (IMAX, GOLD, 2D, etc.)
+    theatre_show_types: dict[str, list[str]] | None = None
 
 
 def _extract_event_id_from_href(href: str) -> str | None:
@@ -148,7 +151,8 @@ def _check_availability_direct(
                     movie_url=buytickets_url,
                 )
 
-            theatres = _parse_theatres_from_page(page)
+            theatres, theatre_show_types = _parse_theatres_and_show_types_from_page(page)
+            all_types = sorted(set().union(*(theatre_show_types.values() or [set()])))
             return CrawlResult(
                 available=True,
                 showtimes=[],
@@ -158,6 +162,8 @@ def _check_availability_direct(
                 ),
                 movie_url=buytickets_url,
                 theatres=theatres if theatres else None,
+                show_types=all_types if all_types else None,
+                theatre_show_types=theatre_show_types if theatre_show_types else None,
             )
         except Exception as e:
             logger.exception("Crawler error (direct)")
@@ -366,6 +372,22 @@ _VENUE_CARD_TIME_RE = re.compile(
     re.DOTALL,
 )
 
+# Show type keywords to extract from card text (word-boundary, case-insensitive)
+_SHOW_TYPE_KEYWORDS = [
+    "IMAX",
+    "GOLD",
+    "SILVER",
+    "ATMOS",
+    "DOLBY",
+    "LASER",
+    "2D",
+    "3D",
+    "4K",
+    "QSC",
+    "Couple Seats",
+    "TWIN SEATED",
+]
+
 
 def _venue_name_from_card_text(text: str) -> str | None:
     """Extract venue name from card text; returns None if not a valid card pattern."""
@@ -380,26 +402,50 @@ def _venue_name_from_card_text(text: str) -> str | None:
     return None
 
 
-def _parse_theatres_from_page(page: Any) -> list[str]:
+def _show_types_from_card_text(text: str) -> set[str]:
+    """Extract show type keywords from card text (after venue name). Returns canonical names."""
+    found: set[str] = set()
+    if not text:
+        return found
+    # Strip venue name: everything before first time pattern
+    match = re.search(r"\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM|am|pm)", text)
+    if match:
+        rest = text[match.start() :]
+    else:
+        rest = text
+    rest_lower = rest.lower()
+    for keyword in _SHOW_TYPE_KEYWORDS:
+        # Word boundary for single tokens; allow "2D" / "3D" / "4K" as whole word
+        pattern = r"\b" + re.escape(keyword) + r"\b"
+        if re.search(pattern, rest_lower, re.IGNORECASE):
+            found.add(keyword)
+    return found
+
+
+def _parse_theatres_and_show_types_from_page(
+    page: Any,
+) -> tuple[list[str], dict[str, list[str]]]:
     """
-    Extract theatre names only from venue cards in the main listing. Uses the
-    virtualized grid container (ReactVirtualized) when present; otherwise finds
-    divs whose text looks like a venue card (name + showtimes). No BMS hashed
-    class names (e8nk8f, etc.) so layout changes don't break us.
+    Extract theatre names and per-theatre show types from venue cards in the
+    main listing. Returns (ordered list of theatre names, dict of theatre -> show types).
     """
     theatres: list[str] = []
-    seen: set[str] = set()
+    theatre_show_types: dict[str, list[str]] = {}
+    seen_names: set[str] = set()
 
-    def add_from_text(text: str) -> bool:
+    def process_card_text(text: str) -> None:
         name = _venue_name_from_card_text(text)
         if not name or not _is_valid_venue_name(name):
-            return False
-        if name not in seen:
-            seen.add(name)
+            return
+        types_for_card = sorted(_show_types_from_card_text(text))
+        if name not in seen_names:
+            seen_names.add(name)
             theatres.append(name)
-        return True
+        existing = theatre_show_types.get(name, [])
+        combined = sorted(set(existing) | set(types_for_card))
+        theatre_show_types[name] = combined
 
-    # 1) Prefer direct children of the virtualized grid (react-virtualized class)
+    # 1) Prefer direct children of the virtualized grid
     try:
         container = page.locator(
             "div[class*='ReactVirtualized__Grid__innerScrollContainer']"
@@ -415,48 +461,73 @@ def _parse_theatres_from_page(page: Any) -> list[str]:
                         if text and re.search(
                             r"\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM|am|pm)", text
                         ):
-                            add_from_text(text)
+                            process_card_text(text)
                 except Exception:
                     continue
             if theatres:
-                return theatres
+                return theatres, theatre_show_types
     except Exception:
         pass
 
-    # 2) Fallback: find any div that looks like a single venue card (name + times, bounded size)
+    # 2) Fallback: find divs that look like venue cards and return name + show types
     try:
         raw = page.evaluate(
             """() => {
               const timeRe = /\\d{1,2}\\s*:\\s*\\d{2}\\s*(AM|PM|am|pm)?/i;
               const venueRe = /^[A-Za-z][^:\\n]{2,}:\\s*.+$/;
+              const keywords = ['IMAX','GOLD','SILVER','ATMOS','DOLBY','LASER','2D','3D','4K','QSC','Couple Seats','TWIN SEATED'];
               const out = [];
-              const seen = new Set();
-              function getVenueFromText(text) {
-                const m = text.match(/^\\s*(.+?)\\s+\\d{1,2}\\s*:\\s*\\d{2}\\s*(?:AM|PM|am|pm)?/);
-                return m ? m[1].trim() : null;
-              }
               document.querySelectorAll('div').forEach(div => {
                 const t = (div.innerText || '').trim();
                 if (t.length < 80 || t.length > 2500) return;
                 if (!timeRe.test(t)) return;
-                const firstLine = t.split('\\n')[0].trim();
-                if (!venueRe.test(firstLine)) return;
-                const name = getVenueFromText(t) || firstLine;
-                if (name && !seen.has(name)) { seen.add(name); out.push(name); }
+                const m = t.match(/^\\s*(.+?)\\s+\\d{1,2}\\s*:\\s*\\d{2}\\s*(?:AM|PM|am|pm)?/);
+                const name = m ? m[1].trim() : null;
+                if (!name || !venueRe.test(name)) return;
+                const rest = t.replace(/^[^\\d]+?(?=\\d{1,2}\\s*:\\s*\\d{2})/, '');
+                const types = [];
+                keywords.forEach(kw => {
+                  const r = new RegExp('\\\\b' + kw.replace(/\\s+/g, '\\\\s+') + '\\\\b', 'i');
+                  if (r.test(rest)) types.push(kw);
+                });
+                out.push({ name: name, showTypes: types });
               });
               return out;
             }"""
         )
         if isinstance(raw, list):
-            for name in raw:
-                n = (name or "").strip()
-                if _is_valid_venue_name(n) and n not in seen:
-                    seen.add(n)
-                    theatres.append(n)
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                name = (item.get("name") or "").strip()
+                types_list = item.get("showTypes") or []
+                if not name or not _is_valid_venue_name(name):
+                    continue
+                if name not in seen_names:
+                    seen_names.add(name)
+                    theatres.append(name)
+                theatre_show_types[name] = sorted(
+                    set(theatre_show_types.get(name, [])) | set(str(x) for x in types_list)
+                )
     except Exception:
         pass
 
+    return theatres, theatre_show_types
+
+
+def _parse_theatres_from_page(page: Any) -> list[str]:
+    """Theatre names only (uses combined parser, discards show types)."""
+    theatres, _ = _parse_theatres_and_show_types_from_page(page)
     return theatres
+
+
+def _parse_show_types_from_page(page: Any) -> list[str]:
+    """Flattened list of all show types (uses combined parser)."""
+    _, theatre_show_types = _parse_theatres_and_show_types_from_page(page)
+    all_types: set[str] = set()
+    for st_list in theatre_show_types.values():
+        all_types.update(st_list)
+    return sorted(all_types)
 
 
 def _check_availability_impl(
@@ -543,10 +614,13 @@ def _check_availability_impl(
             page.goto(buytickets_url, wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
 
-            # 5) Parse showtimes / Book buttons and theatres
+            # 5) Parse showtimes / Book buttons, theatres, and per-theatre show types
             showtimes, available = _parse_availability_from_page(page, buytickets_url)
             showtimes = list(dict.fromkeys(showtimes))[:15]
-            theatres = _parse_theatres_from_page(page) if available else []
+            theatres, theatre_show_types = (
+                _parse_theatres_and_show_types_from_page(page) if available else ([], {})
+            )
+            all_types = sorted(set().union(*(theatre_show_types.values() or [set()])))
             if available:
                 message = (
                     f"Tickets available for {target_date_yyyymmdd}. "
@@ -564,6 +638,8 @@ def _check_availability_impl(
                 message=message,
                 movie_url=buytickets_url,
                 theatres=theatres if theatres else None,
+                show_types=all_types if all_types else None,
+                theatre_show_types=theatre_show_types if theatre_show_types else None,
             )
 
         except Exception as e:
